@@ -1,10 +1,10 @@
-// lib/screens/add_task_screen.dart (WITH TASK SPLITTING)
+// lib/screens/add_task_screen.dart (COMPLETE V2 - ALL BUGS FIXED)
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:time_os_final/database/database_helper.dart';
 import 'package:time_os_final/models/task_model.dart';
-import 'package:time_os_final/helpers/task_splitter.dart';
+import 'package:time_os_final/helpers/task_splitter_v2.dart'; // V2!
 import 'package:time_os_final/helpers/preferences_helper.dart';
 import 'package:time_os_final/theme.dart';
 
@@ -34,6 +34,7 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
     _durationController.addListener(_updateSplitPreview);
   }
 
+  // BUG FIX #8: Real-time preview update
   Future<void> _updateSplitPreview() async {
     if (_durationController.text.isEmpty) {
       setState(() => _splitPreview = '');
@@ -57,7 +58,10 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
         );
 
         setState(() {
-          _splitPreview = TaskSplitter.getTaskSplitPreview(tempTask, workBlock);
+          _splitPreview = TaskSplitterV2.getTaskSplitPreview(
+            tempTask,
+            workBlock,
+          );
         });
       }
     }
@@ -99,11 +103,13 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
     if (!mounted) return;
     if (_formKey.currentState!.validate()) {
       if (_selectedDeadline == null || _durationController.text.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please select a deadline and duration.'),
-          ),
-        );
+        _showError('Please select a deadline and duration.');
+        return;
+      }
+
+      // BUG FIX #14: Check if deadline already passed
+      if (_selectedDeadline!.isBefore(DateTime.now())) {
+        _showError('Deadline has already passed. Please select a future date.');
         return;
       }
 
@@ -118,22 +124,18 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
       }
 
       if (parsedDuration == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please enter duration in HH:MM format.'),
-          ),
-        );
+        _showError('Please enter duration in HH:MM format.');
         return;
       }
 
-      // Duration rounding logic
+      // BUG FIX #3: Duration rounding to 5 minutes
       int totalMinutes = parsedDuration.inMinutes;
       if (totalMinutes % 5 != 0) {
         totalMinutes = totalMinutes - (totalMinutes % 5) + 5;
       }
       _selectedDuration = Duration(minutes: totalMinutes);
 
-      // Show loading indicator
+      // Show loading
       if (!mounted) return;
       showDialog(
         context: context,
@@ -141,84 +143,143 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
         builder: (context) => const Center(child: CircularProgressIndicator()),
       );
 
-      // Create the task
-      final newTask = Task(
-        name: _nameController.text,
-        details: _detailsController.text,
-        estimatedDuration: _selectedDuration!,
-        deadline: _selectedDeadline!,
-        difficulty: _selectedDifficulty ?? TaskDifficulty.easy,
-      );
-
-      // Get existing data
-      final fixedEvents = await DatabaseHelper.instance.getAllFixedEvents();
-      final existingTasks = await DatabaseHelper.instance.getAllTasks();
-
-      // Try to schedule with splitting
-      final scheduledSplits = await TaskSplitter.scheduleTaskSessions(
-        task: newTask,
-        fixedEvents: fixedEvents,
-        existingTasks: existingTasks,
-      );
-
-      if (!mounted) return;
-      Navigator.of(context).pop(); // Close loading dialog
-
-      if (scheduledSplits.isEmpty) {
-        // Couldn't schedule
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Unable to schedule this task before the deadline. '
-              'Try extending the deadline or reducing task duration.',
-            ),
-            duration: Duration(seconds: 4),
-          ),
+      try {
+        // Create task
+        final newTask = Task(
+          name: _nameController.text.trim(),
+          details: _detailsController.text.trim(),
+          estimatedDuration: _selectedDuration!,
+          deadline: _selectedDeadline!,
+          difficulty: _selectedDifficulty ?? TaskDifficulty.easy,
         );
-        return;
-      }
 
-      // Show confirmation dialog if task was split
-      if (scheduledSplits.length > 1) {
-        final confirmed = await _showSplitConfirmation(scheduledSplits);
-        if (!confirmed) return;
-      }
+        // Get existing data
+        final fixedEvents = await DatabaseHelper.instance.getAllFixedEvents();
+        final existingTasks = await DatabaseHelper.instance.getAllTasks();
 
-      // Save all task sessions to database
-      final taskObjects = TaskSplitter.convertSplitsToTasks(
-        newTask,
-        scheduledSplits,
-      );
-
-      for (var task in taskObjects) {
-        await DatabaseHelper.instance.addTask(task);
-      }
-
-      if (!mounted) return;
-
-      // Show success message
-      if (scheduledSplits.length == 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Task scheduled for ${DateFormat('MMM d at h:mm a').format(scheduledSplits.first.scheduledTime!)}',
-            ),
-            backgroundColor: AppColors.success,
-          ),
+        // BUG FIX #2: Check available time first
+        final hasTime = await TaskSplitterV2.hasAvailableTimeBeforeDeadline(
+          _selectedDuration!,
+          _selectedDeadline!,
+          fixedEvents,
+          existingTasks,
         );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Task split into ${scheduledSplits.length} sessions and scheduled!',
-            ),
-            backgroundColor: AppColors.success,
-          ),
-        );
-      }
 
-      Navigator.pop(context);
+        if (!hasTime) {
+          if (!mounted) return;
+          Navigator.of(context).pop(); // Close loading
+          _showError(
+            'No available time before deadline.\n\n'
+            'Try:\n'
+            '• Extending the deadline\n'
+            '• Reducing task duration\n'
+            '• Removing some fixed events',
+          );
+          return;
+        }
+
+        // Schedule with V2 algorithm (even distribution)
+        final scheduledSplits = await TaskSplitterV2.scheduleTaskSessionsEvenly(
+          task: newTask,
+          fixedEvents: fixedEvents,
+          existingTasks: existingTasks,
+        );
+
+        if (!mounted) return;
+        Navigator.of(context).pop(); // Close loading
+
+        if (scheduledSplits.isEmpty) {
+          _showError(
+            'Unable to schedule task. Please try adjusting parameters.',
+          );
+          return;
+        }
+
+        // Show confirmation if split
+        if (scheduledSplits.length > 1) {
+          final confirmed = await _showSplitConfirmation(scheduledSplits);
+          if (!confirmed) return;
+        }
+
+        // BUG FIX #9: Check for duplicates before insert
+        final isDuplicate = await _checkDuplicateTask(newTask.name);
+        if (isDuplicate) {
+          final shouldProceed = await _showDuplicateWarning(newTask.name);
+          if (!shouldProceed) return;
+        }
+
+        // Convert to tasks and save
+        final taskObjects = TaskSplitterV2.convertSplitsToTasks(
+          newTask,
+          scheduledSplits,
+        );
+
+        for (var task in taskObjects) {
+          await DatabaseHelper.instance.addTask(task);
+        }
+
+        if (!mounted) return;
+
+        // BUG FIX #8: Force UI refresh after insert
+        Navigator.pop(context, true); // Return true to trigger refresh
+
+        // Success message
+        _showSuccess(
+          scheduledSplits.length == 1
+              ? 'Task scheduled for ${DateFormat('MMM d at h:mm a').format(scheduledSplits.first.scheduledTime!)}'
+              : 'Task split into ${scheduledSplits.length} sessions and scheduled evenly!',
+        );
+      } catch (e) {
+        if (!mounted) return;
+        Navigator.of(context).pop(); // Close loading
+        _showError('Error: ${e.toString()}');
+      }
     }
+  }
+
+  // BUG FIX #9: Check for duplicate tasks
+  Future<bool> _checkDuplicateTask(String taskName) async {
+    final existingTasks = await DatabaseHelper.instance.getAllTasks();
+    return existingTasks.any(
+      (task) =>
+          task.name.toLowerCase() == taskName.toLowerCase() && !task.isComplete,
+    );
+  }
+
+  Future<bool> _showDuplicateWarning(String taskName) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber, color: AppColors.warning),
+                SizedBox(width: 8),
+                Text('Duplicate Task'),
+              ],
+            ),
+            content: Text(
+              'A task named "$taskName" already exists.\n\n'
+              'Do you want to create another one?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                ),
+                child: const Text(
+                  'Create Anyway',
+                  style: TextStyle(color: AppColors.textOnPrimary),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   Future<bool> _showSplitConfirmation(List<TaskSplit> splits) async {
@@ -229,7 +290,7 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
               children: [
                 Icon(Icons.content_cut, color: AppColors.primary),
                 SizedBox(width: 8),
-                Text('Task Split'),
+                Text('Task Split & Distributed'),
               ],
             ),
             content: SingleChildScrollView(
@@ -238,7 +299,8 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'This task will be split into ${splits.length} sessions:',
+                    'Your task will be split into ${splits.length} sessions, '
+                    'spread evenly until the deadline:',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 16),
@@ -263,7 +325,14 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              '${DateFormat('MMM d, h:mm a').format(split.scheduledTime!)} • ${_formatDuration(split.duration)}',
+                              '📅 ${DateFormat('MMM d, h:mm a').format(split.scheduledTime!)}',
+                              style: const TextStyle(
+                                color: AppColors.secondaryText,
+                                fontSize: 13,
+                              ),
+                            ),
+                            Text(
+                              '⏱️ ${_formatDuration(split.duration)}',
                               style: const TextStyle(
                                 color: AppColors.secondaryText,
                                 fontSize: 13,
@@ -296,6 +365,26 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
           ),
         ) ??
         false;
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppColors.danger,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppColors.success,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   String _formatDuration(Duration duration) {
@@ -349,7 +438,7 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
                   ),
                 ),
                 validator: (value) {
-                  if (value == null || value.isEmpty) {
+                  if (value == null || value.trim().isEmpty) {
                     return 'Please enter a task name';
                   }
                   return null;
@@ -365,10 +454,11 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
               TextFormField(
                 controller: _durationController,
                 decoration: const InputDecoration(
-                  hintText: 'HH:MM (e.g., 01:30)',
+                  hintText: 'HH:MM (e.g., 06:00 for 6 hours)',
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.all(Radius.circular(12)),
                   ),
+                  helperText: 'Enter total time needed',
                 ),
                 keyboardType: TextInputType.datetime,
               ),

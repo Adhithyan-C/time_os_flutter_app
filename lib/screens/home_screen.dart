@@ -1,4 +1,4 @@
-// lib/screens/home_screen.dart
+// lib/screens/home_screen.dart (WITH CHRONOLOGICAL SORTING)
 
 import 'package:flutter/material.dart';
 import 'package:time_os_final/database/database_helper.dart';
@@ -9,6 +9,7 @@ import 'package:time_os_final/screens/add_task_screen.dart';
 import 'package:time_os_final/screens/find_task_screen.dart';
 import 'package:time_os_final/widgets/task_card.dart';
 import 'package:time_os_final/helpers/preferences_helper.dart';
+import 'package:time_os_final/helpers/sorting_helper.dart'; // NEW
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -50,6 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // BUG FIX #8: Refresh after add/edit
   void _loadTasks() {
     setState(() {
       _taskList = DatabaseHelper.instance.getAllTasks();
@@ -71,15 +73,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     await DatabaseHelper.instance.updateTask(updatedTask);
-    _loadTasks();
+    _loadTasks(); // Refresh
   }
 
   void _navigateToAddScreen() async {
-    await Navigator.push(
+    // BUG FIX #8: Wait for result and refresh
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const AddTaskScreen()),
     );
-    _loadTasks();
+
+    if (result == true) {
+      _loadTasks(); // Force refresh
+    }
   }
 
   void _navigateToFindScreen() {
@@ -175,21 +181,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
 
                   final allTasks = snapshot.data ?? [];
-                  final today = DateTime.now();
-                  final todayTasks = allTasks.where((task) {
-                    if (task.scheduledTime == null) return false;
-                    return task.scheduledTime!.year == today.year &&
-                        task.scheduledTime!.month == today.month &&
-                        task.scheduledTime!.day == today.day;
-                  }).toList();
 
-                  // Sort by scheduled time
-                  todayTasks.sort((a, b) {
-                    if (a.scheduledTime == null || b.scheduledTime == null) {
-                      return 0;
-                    }
-                    return a.scheduledTime!.compareTo(b.scheduledTime!);
-                  });
+                  // BUG FIX: Chronological sorting
+                  final todayTasks = SortingHelper.getTodayTasksSorted(
+                    allTasks,
+                  );
 
                   if (todayTasks.isEmpty) {
                     return Center(

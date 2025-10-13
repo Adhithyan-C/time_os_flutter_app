@@ -7,6 +7,7 @@ import 'package:time_os_final/screens/onboarding/step3_work_window.dart';
 import 'package:time_os_final/screens/onboarding/step4_peak_productivity.dart';
 import 'package:time_os_final/screens/onboarding/step5_work_style.dart';
 import 'package:time_os_final/screens/onboarding/step6_task_limits.dart';
+import 'package:time_os_final/screens/onboarding/step_weekly_events.dart'; // NEW
 import 'package:time_os_final/screens/onboarding/step7_complete.dart';
 import 'package:time_os_final/helpers/preferences_helper.dart';
 import 'package:time_os_final/theme.dart';
@@ -21,7 +22,7 @@ class OnboardingFlowScreen extends StatefulWidget {
 class _OnboardingFlowScreenState extends State<OnboardingFlowScreen> {
   final PageController _pageController = PageController();
   int _currentStep = 0;
-  final int _totalSteps = 7;
+  final int _totalSteps = 8; // CHANGED FROM 7 to 8
 
   // Collected data
   String userName = '';
@@ -145,6 +146,8 @@ class _OnboardingFlowScreenState extends State<OnboardingFlowScreen> {
                       _nextStep();
                     },
                   ),
+                  // NEW STEP: Weekly Events
+                  StepWeeklyEvents(onNext: () => _nextStep()),
                   Step7Complete(
                     userName: userName,
                     onComplete: _completeOnboarding,

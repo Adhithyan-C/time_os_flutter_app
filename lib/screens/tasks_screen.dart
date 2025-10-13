@@ -1,4 +1,4 @@
-// lib/screens/tasks_screen.dart
+// lib/screens/tasks_screen.dart (WITH SORTING & REFRESH)
 
 import 'package:flutter/material.dart';
 import 'package:time_os_final/database/database_helper.dart';
@@ -6,6 +6,7 @@ import 'package:time_os_final/models/task_model.dart';
 import 'package:time_os_final/screens/edit_task_screen.dart';
 import 'package:time_os_final/theme.dart';
 import 'package:time_os_final/widgets/task_card.dart';
+import 'package:time_os_final/helpers/sorting_helper.dart'; // NEW
 
 class TasksScreen extends StatefulWidget {
   const TasksScreen({super.key});
@@ -16,7 +17,6 @@ class TasksScreen extends StatefulWidget {
 
 class _TasksScreenState extends State<TasksScreen> {
   int _selectedDayIndex = DateTime.now().weekday % 7;
-
   List<Task> _allTasks = [];
   List<Task> _filteredTasks = [];
 
@@ -26,6 +26,7 @@ class _TasksScreenState extends State<TasksScreen> {
     _loadAllTasks();
   }
 
+  // BUG FIX #8: Proper refresh
   Future<void> _loadAllTasks() async {
     final tasks = await DatabaseHelper.instance.getAllTasks();
     if (mounted) {
@@ -36,14 +37,16 @@ class _TasksScreenState extends State<TasksScreen> {
     }
   }
 
+  // BUG FIX: Chronological sorting after filtering
   void _filterTasksForSelectedDay() {
-    _filteredTasks = _allTasks.where((task) {
-      final effectiveDate = task.scheduledTime ?? task.deadline;
-      return effectiveDate.weekday % 7 == _selectedDayIndex;
-    }).toList();
+    // Use SortingHelper for chronological sorting
+    _filteredTasks = SortingHelper.getTasksForDaySorted(
+      _allTasks,
+      _selectedDayIndex,
+    );
   }
 
-  // --- NEW FUNCTION: Toggle task completion ---
+  // BUG FIX #8: Force refresh after toggle
   Future<void> _toggleTaskCompletion(Task task, bool? isCompleted) async {
     if (isCompleted == null) return;
 
@@ -59,15 +62,19 @@ class _TasksScreenState extends State<TasksScreen> {
     );
 
     await DatabaseHelper.instance.updateTask(updatedTask);
-    _loadAllTasks();
+    _loadAllTasks(); // Refresh immediately
   }
 
   void _navigateToEditScreen(Task task) async {
-    await Navigator.push(
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => EditTaskScreen(task: task)),
     );
-    _loadAllTasks();
+
+    // BUG FIX #8: Refresh on return
+    if (result == true || result == null) {
+      _loadAllTasks();
+    }
   }
 
   @override
@@ -83,6 +90,7 @@ class _TasksScreenState extends State<TasksScreen> {
       ),
       body: Column(
         children: [
+          // Day selector
           Padding(
             padding: const EdgeInsets.symmetric(
               vertical: 8.0,
@@ -125,14 +133,63 @@ class _TasksScreenState extends State<TasksScreen> {
             ),
           ),
 
+          // Task count indicator
+          if (_filteredTasks.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.access_time,
+                    size: 16,
+                    color: AppColors.secondaryText,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${_filteredTasks.length} task${_filteredTasks.length != 1 ? 's' : ''} (sorted by time)',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.secondaryText,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          const SizedBox(height: 8),
+
+          // Task list
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(16.0),
               child: _filteredTasks.isEmpty
                   ? Center(
-                      child: Text(
-                        "No tasks scheduled for this day.",
-                        style: TextStyle(color: AppColors.secondaryText),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.event_available,
+                            size: 64,
+                            color: AppColors.secondaryText.withAlpha(128),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            "No tasks for ${_getDayName(_selectedDayIndex)}",
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.primaryText,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Tasks are sorted chronologically',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppColors.secondaryText,
+                            ),
+                          ),
+                        ],
                       ),
                     )
                   : ListView.builder(
@@ -144,7 +201,6 @@ class _TasksScreenState extends State<TasksScreen> {
                           child: TaskCard(
                             task: task,
                             onTap: () => _navigateToEditScreen(task),
-                            // --- FIX: Added the onCompleted callback ---
                             onCompleted: (isCompleted) =>
                                 _toggleTaskCompletion(task, isCompleted),
                           ),
@@ -156,5 +212,18 @@ class _TasksScreenState extends State<TasksScreen> {
         ],
       ),
     );
+  }
+
+  String _getDayName(int index) {
+    const days = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ];
+    return days[index];
   }
 }
